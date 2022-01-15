@@ -1,0 +1,11 @@
+.*
+*.pyc
+*.npy
+*.p
+*.log
+*~
+lib/pmt_waveform.egg-info
+
+processed.pkl
+!/.gitignore
+#*

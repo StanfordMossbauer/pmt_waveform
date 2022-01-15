@@ -1,0 +1,7 @@
+numpy
+matplotlib
+h5py
+tqdm
+more_itertools
+physics_util
+bead_util
