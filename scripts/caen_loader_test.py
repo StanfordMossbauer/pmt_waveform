@@ -6,55 +6,55 @@ import matplotlib.pyplot as plt
 import caen_loader as caen
 import physics_util as pu
 
-from bead_util import get_color_map
+plt.rcParams.update({'font.size': 14})
 
 rng = np.random.default_rng()
 
-# data_dir = '/home/cblakemore/caen_data/PlasticScintillatorTestForChas/'
-data_dir = '/Users/manifestation/tmp/'
+base = '/Users/manifestation/Stanford/mossbauer/darkbox_clone/'
+
+# data_dir = base + '20220510_CAENTest/data'
+data_dir = base + '20220513_preampTest/data'
+# data_dir = base + '20220517_preampCLC/data'
+# data_dir = base + '20220519/data'
 
 data_files = \
     [
-     'no_source_background.txt', \
-     'no_source_background_dark.txt', \
-     'cs137_dark.txt', \
-     'ba133_dark.txt'
+     # 'ba133_1600V_ortecVT120.dat', \
+     'ba133_1600V_CLC144.dat', \
+     # 'background_1600V.dat', \
+     # 'test.dat', \
+     # 'test2.dat', \
+     # '../wave0.dat', \
     ]
 
-first_n_waveform = 0
-# first_n_waveform = 70000
 
-cs137_data = caen.WaveformContainer(os.path.join(data_dir, data_files[3]), \
-                                    first_n_waveform=first_n_waveform)
-cs137_data.subtract_baseline(pulse_start_ind=50)
+data = caen.WaveformContainer(fname=os.path.join(data_dir, data_files[0]), \
+                              header=True)
 
-cs137_data.find_pulse_maxima_mean(sample_window=10, presmooth=True)
+data.compute_baseline(pulse_start_ind=50, plot=False, amp_scale='v')
 
+# for i in range(100):
+#     ind = int(222 + 2*i)
+#     data.plot_waveform(ind, baseline=True, amp_scale='b')
+#     input()
 
-fig, ax = plt.subplots(1,1)
+test_index = 573
+data.integrate_waveforms(integration_start=1.5e-6, integration_window=0.9e-6, \
+                         baseline=False, plot=True, plot_index=222, \
+                         polarity=-1, adaptive_window=True, asymmetry=0.2)
 
-vals, _, _ = ax.hist(cs137_data.pulse_maxima, bins=100, range=(0,100))
+# a, b = data._load_caen_binary(first_index=test_index, last_index=test_index+1)
+# index = a[0]
+# waveform = b[0]
 
-ax.set_yscale('log')
-ax.set_ylim(0.5, 2*np.max(vals))
-ax.set_ylabel('Counts [abs.]')
-ax.set_xlabel('Pulse Maximum [ADC bins]')
+# print(index)
+# # data.plot_waveform(index, baseline=False, amp_scale='v')
 
-plt.show()
+# plt.figure()
+# plt.loglog(np.abs(np.fft.rfft(waveform - data.baseline_arr[index])))
 
-
-# cs137_data.find_pulse_maxima_gauss(sample_window=30)
-
-# for i in range(10):
-#     plt.plot(cs137_data.waveform_arr_nomean[i,:], color='C{:d}'.format(i))
-#     plt.axhline(cs137_data.pulse_maxima[i], color='C{:d}'.format(i))
 # plt.show()
 
+data.plot_pulse_spectra(hist_range=(0,5000), filled=False)
 
-
-# test_ind = rng.choice(np.arange(cs137_data.waveform_arr.shape[0]))
-
-# popt = pu.fitting.generate_histogram_and_fit_gaussian( \
-#                         cs137_data.waveform_arr[:,:50], bins=15, \
-#                         range=(8276,8290), plot=True, print_level=0)
 
