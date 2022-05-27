@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import caen_loader as caen
-import physics_util as pu
 
 plt.rcParams.update({'font.size': 14})
 
