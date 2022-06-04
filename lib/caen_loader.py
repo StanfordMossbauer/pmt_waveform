@@ -1,8 +1,13 @@
-import os
+import os, sys
 from tqdm import tqdm
+
+import dill as pickle
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+
+from matplotlib import cm
 
 
 ### The DT5724B digitizer we will be using has a fixed sampling frequency
@@ -20,6 +25,11 @@ caen_fsamp = 100.0e6
 caen_nbit = 14
 caen_range = 2.25
 adc_fac = caen_range / (2.0**caen_nbit - 1)
+
+
+### Some of the functions benefit from a random number generator, so we 
+### generate an instance of the default NumPy rng for general use
+rng = np.random.default_rng()
 
 
 
@@ -62,6 +72,43 @@ def count_lines(filename):
         n_lines = sum(buffer.count(b'\n') for buffer in c_generator) + 1
 
     return n_lines
+
+
+
+def get_color_map( n, cmap='plasma', log=False, invert=False):
+    '''Gets a map of n colors from cold to hot for use in
+       plotting many curves.
+       
+        INPUTS: 
+
+            n - length of color array to make
+            
+            cmap - color map for final output
+
+            invert - option to invert
+
+        OUTPUTS: 
+
+            outmap - color map in rgba format
+    '''
+
+    n = int(n)
+    outmap = []
+
+    if log:
+        cNorm = colors.LogNorm(vmin=0, vmax=2*n)
+    else:
+        cNorm = colors.Normalize(vmin=0, vmax=2*n)
+
+    scalarMap = cm.ScalarMappable(norm=cNorm, cmap=cmap)
+
+    for i in range(n):
+        outmap.append( scalarMap.to_rgba(2*i + 1) )
+
+    if invert:
+        outmap = outmap[::-1]
+
+    return outmap
 
 
 
@@ -190,6 +237,97 @@ class WaveformContainer:
         self.indices = np.zeros(self.n_waveform)
         self.times = np.zeros(self.n_waveform)
 
+        self.utimes = None
+
+
+
+
+
+    def save(self, opt_ext=None, verbose=False):
+        '''
+        Method to save the class to a pre-defined location for later reloading
+        so all of the waveforms don't need to be reprocessed. This is useful
+        as the pulse maxima finding algorithm can take a while if the waveforms
+        are filtered prior to fitting.
+
+        INPUTS
+
+            opt_ext - str, optional extension to add to the default filename
+                if some special analysis was performed
+
+        '''
+
+        ### Make sure the extension has an underscore for intelligible names.
+        ### If it doesn't have an underscore, add one
+        if opt_ext is not None:
+            if opt_ext[0] != '_':
+                opt_ext = '_' + opt_ext
+        else:
+            opt_ext = ''
+
+        ### Extract the parent file name. Probably good to use the os.path
+        ### library instead of this derpy solution
+        parts = self.fname.split('.')
+        savename = parts[0] + opt_ext + '.wfm'
+
+        if verbose:
+            print('     ----------------------------------------')
+            print('Saving WaveformContainer object... ', end=' ')
+
+        pickle.dump(self, open(savename, 'wb'))
+
+        if verbose:
+            print('Done!')
+            print('Saved to: ', savename)
+            print('     ----------------------------------------')
+            sys.stdout.flush()
+
+        return None
+
+
+
+
+
+    def load(self, opt_ext=None, verbose=False):
+        '''
+        Method to save the class to a pre-defined location for later reloading
+        so all of the waveforms don't need to be reprocessed. This is useful
+        as the pulse maxima finding algorithm can take a while if the waveforms
+        are filtered prior to fitting.
+
+        INPUTS
+
+            opt_ext - str, optional extension to add to the default filename
+                if some special analysis was performed
+
+        '''
+
+
+
+        ### Make sure the extension has an underscore for intelligible names.
+        ### If it doesn't have an underscore, add one
+        if opt_ext is not None:
+            if opt_ext[0] != '_':
+                opt_ext = '_' + opt_ext
+        else:
+            opt_ext = ''
+
+        ### Extract the parent file name. Probably good to use the os.path
+        ### library instead of this derpy solution
+        parts = self.fname.split('.')
+        loadname = parts[0] + opt_ext + '.wfm'
+
+        old_class = pickle.load( open(loadname, 'rb') )
+        self.__dict__.update(old_class.__dict__)
+
+        if verbose:
+            print('     ----------------------------------------')
+            print('Loaded WaveformContainer from: ')
+            print('          ', loadname)
+            print('     ----------------------------------------')
+            sys.stdout.flush()
+
+        return None
 
 
 
@@ -325,8 +463,9 @@ class WaveformContainer:
     def _unwrap_times(self, counter_nbit=31, counter_freq=100.0e6):
         '''
         Takes the self.times() array containing the "trigger time tags"
-        from each event, and unwraps them, as it only counts up to ~21 
-        seconds before the 31-bit counter runs out.
+        from each event, and unwraps them, as the internal counter on the
+        DT5724 digitizer only counts up to ~21 seconds before the 
+        31-bit counter runs out and rolls over.
 
         There is supposedly an Extended Trigger Time Tag (ETTT) option in the
         software, where some header bits get dedicated to an extra 14 bits of 
@@ -341,18 +480,28 @@ class WaveformContainer:
                 determine the max time the counter can get up to
 
             counter_freq - float, frequency of the counter, in Hz
+
         '''
 
-        # print('DERPY UNWRAPPING')
-
+        ### Determine the total length of one full counter sequence
         counter_time = 1.0 / counter_freq
         total_time = counter_time * 2**counter_nbit
 
+        ### With a simple finite difference method, determine where the timer
+        ### wraps over, since it's a really sharp feature. The 'wraps' array
+        ### that's built at the end of this are just the indices of the 
+        ### self.times array where where the timer loops 
         rate = np.diff(self.times)
         wraps = np.arange(len(rate))[np.where(np.abs(rate) > 0.5*total_time)]
 
+        ### Define a new array to make sure we don't get into any weird
+        ### python referencing business. I honestly don't know if I need to 
+        ### do this, but when I tried to do in-place modifcations of the 
+        ### self.time class attribute, it wasn't working properly
         new_times = self.times.copy()
 
+        ### For each time the timer wraps, add the full duration of the
+        ### counter to every point following
         for wrap in wraps:
             new_times[wrap+1:] += total_time
 
@@ -361,32 +510,9 @@ class WaveformContainer:
 
 
 
-
-
-    def save(self):
-        '''
-        Method to save the class to a pre-defined location for later reloading
-        so all of the waveforms don't need to be reprocessed. This is useful
-        as the pulse maxima finding algorithm can take a while if the waveforms
-        are filtered prior to fitting.
-        '''
-        return
-
-
-    def load(self):
-        '''
-        Method to save the class to a pre-defined location for later reloading
-        so all of the waveforms don't need to be reprocessed. This is useful
-        as the pulse maxima finding algorithm can take a while if the waveforms
-        are filtered prior to fitting.
-        '''
-        return
-
-
-
-
     def plot_waveform(self, index, baseline=True, tscale='us', \
-                      amp_scale='bits', show=True, **kwargs):
+                      amp_scale='bits', fig=None, ax=None, \
+                      show=True, color=None, **kwargs):
         '''
         Plots a specific waveform, based on the static index assigned to it
         in the raw data file, and preserved in the self.indices class attribute
@@ -417,6 +543,12 @@ class WaveformContainer:
                 containing all the plotted things
         '''
 
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(1,1)
+
+        if color is None:
+            color = 'C0'
+
         ### Make some labels and factors for nice plotting
         if tscale == 'us' or tscale == 'u' or tscale =='U':
             tscale_fac = 1e6
@@ -445,9 +577,6 @@ class WaveformContainer:
         ### Build a time vector for plotting
         tvec = np.arange(len(raw_waveform)) * (1.0 / caen_fsamp)
 
-        ### Make the figure and axes objects
-        fig, ax = plt.subplots(1,1)
-
         ### Sass the user if they try to do something bad
         if (not baseline) and (self.baseline_arr is None):
             print('Compute the baseline before trying to plot without it...')
@@ -466,7 +595,7 @@ class WaveformContainer:
             ax.axhline(0.0, color='k', ls='--', alpha=0.5, zorder=3)
 
         ### Plot the waveform
-        ax.plot(tvec*tscale_fac, waveform*amp_scale_fac)
+        ax.plot(tvec*tscale_fac, waveform*amp_scale_fac, color=color)
 
         ### Label things
         ax.set_xlabel(xlabel)
@@ -476,6 +605,8 @@ class WaveformContainer:
         if show:
             plt.show()
 
+        ### Returns the figure and axes objects if desired so multiple 
+        ### spectra can be plotted over one another
         return fig, ax
 
 
@@ -610,6 +741,11 @@ class WaveformContainer:
                 containing all the plotted things
         '''
 
+        if self.baseline_arr is None:
+            raise ValueError("Need to compute the baseline before plotting " \
+                             + "which may require special arguments that I " \
+                             + "can't predict for you.")
+
         ### Make some labels and factors for nice plotting
         if tscale == 's':
             tscale_fac = 1.0
@@ -648,10 +784,10 @@ class WaveformContainer:
                          + f'Std. dev. = {std*amp_scale_fac:0.2g}', fontsize=14)
 
         ### Plot the stuff
-        ax.plot(self.times*tscale_fac, \
+        ax.plot(self.utimes*tscale_fac, \
                 (self.baseline_arr+offset)*amp_scale_fac, \
                 color='r', alpha=0.5, ls=':', zorder=5)
-        ax.plot(self.times[good_inds]*tscale_fac, \
+        ax.plot(self.utimes[good_inds]*tscale_fac, \
                 (self.baseline_arr[good_inds]+offset)*amp_scale_fac, \
                 color='C0', zorder=5)
 
@@ -670,11 +806,11 @@ class WaveformContainer:
 
 
 
-    def integrate_waveforms(self, integration_start=0.0e-6, \
+    def integrate_waveforms(self, adaptive_window=True, asymmetry=0.5, \
+                            integration_start=0.0e-6, \
                             integration_window=500.0e-9, \
-                            adaptive_window=False, asymmetry=0.5, \
                             polarity=-1, plot=False, \
-                            plot_index=0, **kwargs):
+                            plot_index=None, **kwargs):
         '''
         Method to integrate the pulse area, via some simple summing operations
         on arrays. Has some options to setup integration windows that are 
@@ -686,13 +822,10 @@ class WaveformContainer:
 
         INPUTS
 
-            integration_start - float, start time of the integration window
-
-            integration_window - float, length of time to integrate the 
-                pulse area
-
             adaptive_window - boolean, whether to adjust the left and right 
-                edges of the window around the most extreme value
+                edges of the window around the most extreme value. This
+                argument is default True since a static timing window 
+                seems generically dumb
 
             asymmetry - float [0,1], asymmetry of the adaptive window. A lower
                 number means there are fewer time-series points included in the
@@ -701,6 +834,11 @@ class WaveformContainer:
                     t_start = t_extremum - 0.3*integration_window
                       t_end = t_extremum + (1 - 0.3)*integration_window
 
+            integration_start - float, start time of the integration window
+
+            integration_window - float, length of time to integrate the 
+                pulse area
+
             polarity - +1 or -1, polarity of the pulse. Used to decide on
                 either using argmax or argmin to find the extremum
 
@@ -708,11 +846,15 @@ class WaveformContainer:
                 window, useful for debugging
 
             plot_index - int, index of waveform to plot if plotting is 
-                desired
+                desired. Will generate a random number if none given
 
             **kwargs
 
         '''
+
+        if plot:
+            if plot_index is None:
+                plot_index = rng.integers(low=0, high=self.n_waveform)
 
         print('Integrating waveforms...')
 
@@ -729,14 +871,17 @@ class WaveformContainer:
                 self._load_caen_binary(first_index=chunk_index, \
                                        last_index=chunk_index+self.chunk_size)
 
-            if adaptive_window:
+            ### Define this quantity for easy array building. Nominally it should
+            ### be the same as self.chunk_size, except for the last chunk.
+            ### This just preserves generality regardless
+            n_waveform = waveforms.shape[0]
 
-                n_waveform = waveforms.shape[0]
+            if adaptive_window:
 
                 ### Build the indexing array and a tiled time array
                 full_inds = np.zeros((n_waveform, self.record_length), \
                                      dtype=bool)
-                full_times = np.tile(tvec,(waveforms.shape[0],1))
+                full_times = np.tile(tvec,(n_waveform,1))
 
                 ### Find the pulse extrema, dependent on the polarity
                 if polarity > 0:
@@ -752,61 +897,162 @@ class WaveformContainer:
                 upper_times = (ext_times + (1.0 - asymmetry)*integration_window)\
                                     .reshape((n_waveform,1))
 
+                ### Get an indexing array for the full array of waveforms.
+                ### Allows for easy summation at the end of the day
                 full_inds = (full_times > lower_times) * (full_times < upper_times)
 
             else:
+
+                ### If we can reliably integrate the same static time window for
+                ### every pulse, we can use the derpy arguments to do just that
                 inds = (tvec > integration_start) \
                             * (tvec < integration_start + integration_window)
-                full_inds = np.tile(inds,(waveforms.shape[0],1))
+                full_inds = np.tile(inds,(n_waveform,1))
 
+            ### If we want to plot the integration, it helps to remember
+            ### the specific integration window we used for the pulse we want to
+            ### plot, since it can be adaptive
             if plot:
                 if np.abs(chunk_index - plot_index) < self.chunk_size \
                         and plot_index > chunk_index:
                     plot_window = full_inds[plot_index-chunk_index]
                     plot_ext_time = ext_times[plot_index-chunk_index]
 
+            ### Raises an AttributeError if the baseline hasn't been computed.
+            ### One would probably never want to include the baseline in the 
+            ### pulse integral estimate
             if self.baseline_arr is None:
                 raise AttributeError("You probably want to subtract the baseline "\
                                      + "before you integrate the pulses...")
 
+            ### Up-convert the waveform datatype for naive math with the 
+            ### baseline array (since that's necessarily a float)
             waveforms64 = waveforms.astype(np.float64)
             baselines = self.baseline_arr[indices].reshape((n_waveform,1))
 
+            ### Compute the pulse integrals as a simple sum over all points
+            ### within the integration window, using the full indexing array built
+            ### earlier as a mask. Given the non-uniform way the adaptive window
+            ### indexing happens, if you try to use the indices directly, NumPy
+            ### is sad and flattens the array.
             self.waveform_integrals[indices] = polarity * \
                 np.sum( (waveforms64 - baselines)*full_inds, axis=-1)
 
-            # plt.plot(tvec, ((waveforms64 - baselines)*full_inds)[5])
-            # plt.show()
-
+        ### Plot that baby if desired!
         if plot:
+
+            ### Use the built in plotting method to generate a figure and axes
+            ### object with the waveform to be plotted, but don't show it yet
+            ### so we can add some things
             fig, ax = self.plot_waveform(plot_index, tscale='u', \
                                          show=False, **kwargs)
+
+            ### Get the limits of the nice waveform plot so after we muck things
+            ### up, we can set it right again
             xlim = ax.get_xlim()
             ylim = ax.get_ylim()
+
+            ### Shade the integration window
             ax.fill_between(tvec*1e6, 0, 1, where=plot_window, \
                             color='k', alpha=0.35, \
                             transform=ax.get_xaxis_transform())
+
+            ### Add a red vertical line at the location of the extremum value
             ax.axvline(plot_ext_time*1e6, color='r', alpha=0.5, ls=':')
+
+            ### Put a little derpy label with the pulse integral
             ax.text(0.7, 0.5, f'Integral = {self.waveform_integrals[plot_index]:0.3g}', \
                     ha='center', va='center', transform=ax.transAxes)
+
+            ### Fix the axes limits and run a tight_layout()
             ax.set_xlim(*xlim)
             ax.set_ylim(*ylim)
             fig.tight_layout()
             plt.show()
 
+        return None
 
 
 
 
-    def plot_pulse_spectra(self, nbin=100, hist_range=None, show=True, \
-                           filled=True, exclude_bad_baseline=True, \
-                           color=None, fig=None, ax=None, label=None):
+    def find_pulse_extrema(self, npoints=3, polarity=-1):
+        '''
+        INPUTS
+
+            npoints - int, number of points to average when computing the
+                value of the extremum
+
+            polarity - +1 or -1, polarity of the pulse. Used to decide on
+                either using argmax or argmin to find the extremum
+
+            plot - boolean, whether to plot an example of the integration
+                window, useful for debugging
+
+            plot_index - int, index of waveform to plot if plotting is 
+                desired
+
+            **kwargs
+
+        '''
+
+        print('Finding Pulse Extrema...')
+
+        ### Load the data in chunks to keep down RAM usage
+        self.waveform_extrema = np.zeros(self.n_waveform)
+        for chunk in range( int(self.n_waveform/self.chunk_size) + 1 ):
+
+            ### Load only the waveforms in this particular chunk
+            chunk_index = chunk * self.chunk_size
+            indices, waveforms = \
+                self._load_caen_binary(first_index=chunk_index, \
+                                       last_index=chunk_index+self.chunk_size)
+
+            ### Define this quantity for easy array building. Nominally it should
+            ### be the same as self.chunk_size, except for the last chunk.
+            ### This just preserves generality regardless
+            n_waveform = waveforms.shape[0]
+
+            inds = np.arange(n_waveform)
+
+            ### Find the pulse extrema, dependent on the polarity
+            if polarity > 0:
+                ext_time_inds = np.argmax(waveforms, axis=-1)
+            elif polarity < 0:
+                ext_time_inds = np.argmin(waveforms, axis=-1)
+
+            ### Get the extremum values, and the baseline
+            ext_vals = waveforms[inds,ext_time_inds].astype(np.float64)
+
+            baselines = self.baseline_arr[indices]
+
+            ### Add the extrema values, minus the baseline, to the array
+            ### taking an explicit absolute value (for sensible spectra
+            ### plotting), assuming the user is keeping track of the
+            ### pulse polarity
+            self.waveform_extrema[indices] = \
+                        polarity * (ext_vals - baselines)
+
+
+        return None
+
+
+
+
+
+
+    def plot_pulse_spectra(self, nbin=100, spectra_type='int', hist_range=None, \
+                           log_scale=True, filled=True, exclude_bad_baseline=True, \
+                           color=None, fig=None, ax=None, xlim=None, label=None, \
+                           show=True):
         '''
         Method to plot a histogram of the integrated pulse areas. Will 
         check to make sure pulses have actually been integrated, plotting
         a spectrum if all conditions are met
 
         INPUTS
+
+            spectra_type - str, either 'int' or 'ext', refering to spectra 
+                of the pulse integrals, or the pulse extrema
 
             nbin - int, number of bins in the output histogram
 
@@ -825,51 +1071,128 @@ class WaveformContainer:
 
         '''
 
+        ### Peform some simple cuts on the data.
+        ###    FOR NOW, the only cut peformed is just when the baseline
+        ###    is bad, which is determined via a very simple method
         if exclude_bad_baseline:
             good_baseline_inds = np.logical_not(self.bad_baselines)
-            good_vals = self.waveform_integrals[good_baseline_inds]
         else:
-            good_vals = self.waveform_integrals.copy()
+            good_baseline_inds = np.ones(self.n_waveform, dtype='bool')
 
+        ### Select the values, either integrals or extrema
+        if spectra_type == 'int':
+            good_vals = self.waveform_integrals[good_baseline_inds]
+        elif spectra_type == 'ext':
+            good_vals = self.waveform_extrema[good_baseline_inds]
+        else:
+            raise ValueError("Argument 'spectra_type' not valid")
+
+        ### If a specific color wasn't chosen, assign the pyplot C0. 
+        ### Kind of assuming only one spectra will be plotted at a time
+        ### in the naive fashion, and when the user is intentionally 
+        ### plotting multiple spectra, they will appropriately use
+        ### the color argument
         if color is None:
             color = 'C0'
 
+        ### Generate the figure and axes instances, as well as the value
+        ### of the ylimits, since the automatically chosen limits need
+        ### to respect ALL the spectra included in the integral
         if fig is None or ax is None:
             fig, ax = plt.subplots(1,1)
+            ylim = None
+        else:
+            ylim = ax.get_ylim()
+
+        if log_scale:
+            ax.set_yscale('log')
+            if ylim[0] <= 0:
+                ylim = (0.5, ylim[1])
 
         if filled:
-            bins_vals, _, _ = \
+            ### If a filled histogram is desired, use the basic pyplot hist
+            ### method to obtain the bin values, as well as do the plotting
+            bin_vals, bin_edges, _ = \
                 ax.hist(good_vals, bins=nbin, range=hist_range, \
                         color=color, label=label)
+            ax.set_ylabel('Counts [#]')
+
         else:
+            ### If a non-filled histogram is desired, we probably want to 
+            ### normalize to count rate, rather than raw counts, in order
+            ### to make comparisons, assuming that's the point of using
+            ### a non-filled histogram. Thus we need to do our own plotting
+
+            ### Generate the histogram
             bin_vals, bin_edges = \
                 np.histogram(good_vals, bins=nbin, range=hist_range)
 
+            ### Build the array of x values to plot by duplicating the 
+            ### bin-edge array, so that vertical sections can be drawn to 
+            ### mimic the edge of a histogram bin. Flatten via the FORTRAN 
+            ### method to get the right ordering
             plot_x = np.stack((bin_edges, bin_edges)).flatten('F')
 
+            ### Build the corresponding array of y values to plot, by
+            ### duplicating the bin values, and then concatenating a half
+            ### count to either end, to bring the spectrum back down
             double_bin_vals = np.stack((bin_vals, bin_vals)).flatten('F')
             plot_y = np.concatenate(([0.5], double_bin_vals, [0.5]))
 
+            ### Construct a normalization factor given by the full length
+            ### of the exposure associated to this file
             norm_fac = 1.0 / np.max(self.utimes)
 
+            ### Plot the damn thing
             ax.plot(plot_x, plot_y*norm_fac, lw=2, color=color, label=label)
+            ax.set_ylabel('Count rate [#/s]')
 
-        ax.set_yscale('log')
 
-        ax.set_ylabel('Count rate [#/s]')
-        ax.set_xlabel('Pulse area [arb.]')
+        ### Setup the x axis label appropriately for the type of histogram
+        if spectra_type == 'int':
+            ax.set_xlabel('Pulse area [arb.]')
+        elif spectra_type == 'ext':
+            ax.set_xlabel('Pulse height [arb.]')
 
+        ### Adjust the y limits intelligently, by seeing if the new data 
+        ### requires an adjustment (e.g. if it's out of range or something)
         if filled:
-            ax.set_ylim(0.5, 1.5*np.max(bin_vals))
+            if ylim is None:
+                ax.set_ylim(0.5, 1.5*np.max(bin_vals))
+            else:
+                new_max = 1.5*np.max(bin_vals)
+                if ylim[1] > new_max:
+                    new_max = ylim[1]
+                ax.set_ylim(0.5, new_max)
         else:
-            ax.set_ylim(0.5*norm_fac, 1.5*np.max(bin_vals)*norm_fac)
+            if ylim is None:
+                ax.set_ylim(0.5*norm_fac, 1.5*np.max(bin_vals)*norm_fac)
+            else:
+                new_max = 1.5*np.max(bin_vals)*norm_fac
+                new_min = 0.5*norm_fac
+                if ylim[1] > new_max:
+                    new_max = ylim[1]
+                if ylim[0] < new_min:
+                    new_min = ylim[0]
+                ax.set_ylim(new_min, new_max)
 
+        ### If a desired xlim was provided set the limit to that range. 
+        ### Otherwise try the hist_range argument, and then finally the min 
+        ### and max of the actual spectra being plotted
+        if xlim is not None:
+            ax.set_xlim(*xlim)
+        elif hist_range is not None:
+            ax.set_xlim(*hist_range)
+        else:
+            ax.set_xlim(np.min(bin_edges), np.max(bin_edges))
 
+        fig.tight_layout()
+        if label:
+            ax.legend(fontsize=10, loc='upper right')
+
+        ### Show the figure, adding the legend when the show command is 
+        ### given, so that all traces are included in the label
         if show:
-            fig.tight_layout()
-            if label:
-                ax.legend(fontsize=10, loc='upper right')
-
             plt.show()
 
         return fig, ax

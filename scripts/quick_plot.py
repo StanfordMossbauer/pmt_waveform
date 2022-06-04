@@ -12,14 +12,16 @@ base = '/Users/manifestation/Stanford/mossbauer/darkbox_clone/'
 # data_dir = base + '20220510_CAENTest/data'
 # data_dir = base + '20220513_preampTest/data'
 # data_dir = base + '20220517_preampCLC/data'
-data_dir = base + '20220520/data'
+# data_dir = base + '20220520/data'
+data_dir = base + '20220527/data'
 
 data_files = \
     [
      # 'ba133_1600V_ortecVT120.dat', \
      # 'ba133_1600V_CLC144.dat', \
-     # 'background_1600V.dat', \
-     'test2.dat', \
+     'cs137_600V.dat', \
+     # 'am241_600V.dat', \
+     # 'test.dat', \
      # '../wave0.dat', \
     ]
 
@@ -35,12 +37,13 @@ data = caen.WaveformContainer(fname=os.path.join(data_dir, data_files[0]), \
                               header=True)
 
 data.compute_baseline(pulse_start_ind=50)
-# data.plot_baseline(amp_scale='b', mean_subtract=False)
+
+data.plot_baseline(amp_scale='b', mean_subtract=False)
 
 waveforms_to_plot = rng.integers(low=0, high=data.n_waveform, size=n_to_plot)
 print(waveforms_to_plot)
 for i in waveforms_to_plot:
-    data.plot_waveform(i, amp_scale='bits', baseline=True)
+    data.plot_waveform(i, amp_scale='volts', baseline=False)
 
 
 

@@ -17,19 +17,21 @@ data_dir = base + '20220527/data'
 data_files = \
     [
      'am241_600V.dat', \
-     'cs137_600V.dat', \
-     'ba133_600V.dat', \
-     'background_600V.dat', \
+     # 'cs137_600V.dat', \
+     # 'ba133_600V.dat', \
+     # 'background_600V.dat', \
     ]
 
 colors = ['C0', 'C1', 'C2', 'C3']
 labels = ['Am-241', 'Cs-137', 'Ba-133', 'background']
 
 
+
+
+
+
 n_spectra = len(data_files)
 
-fig, ax = plt.subplots(1,1)
-fig2, ax2 = plt.subplots(1,1)
 
 for i in range(n_spectra):
 
@@ -51,15 +53,24 @@ for i in range(n_spectra):
         data.save(verbose=True)
 
 
-
+    fig, ax = plt.subplots(1,1)
     fig, ax = data.plot_pulse_spectra(hist_range=(0,40000), nbin=2000, filled=False, \
-                                      fig=fig, ax=ax, show=False, color=colors[i], \
+                                      fig=fig, ax=ax, show=True, color=colors[i], \
                                       label=labels[i], log_scale=True)
 
-    fig2, ax2 = data.plot_pulse_spectra(hist_range=(0,3000), nbin=2000, filled=False, \
-                                        fig=fig2, ax=ax2, show=False, color=colors[i], \
-                                        label=labels[i], log_scale=True, \
-                                        spectra_type='ext')
+    energy_to_plot = float(input('Energy to plot: '))
+    pulses_to_plot = int(input('Pulses to plot: '))
+
+    energy_sorter = np.argsort(np.abs(data.waveform_integrals - energy_to_plot))
+    colors = caen.get_color_map(pulses_to_plot, cmap='plasma')
+
+    fig2, ax2 = plt.subplots(1,1)
+    for i in range(pulses_to_plot):
+        color = colors[i]
+        fig2, ax2 = data.plot_waveform(energy_sorter[i], baseline=False, \
+                                       amp_scale='v', tscale='u', show=False, \
+                                       fig=fig2, ax=ax2, color=color)
+    plt.show()
 
     del data
 
