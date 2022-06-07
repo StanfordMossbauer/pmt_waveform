@@ -7,26 +7,26 @@ import caen_loader as caen
 
 rng = np.random.default_rng()
 
-base = '/Users/manifestation/Stanford/mossbauer/darkbox_clone/'
+# base = '/Users/manifestation/Stanford/mossbauer/darkbox_clone/'
+base = '/home/cblakemore/caen_data/'
 
 # data_dir = base + '20220510_CAENTest/data'
 # data_dir = base + '20220513_preampTest/data'
 # data_dir = base + '20220517_preampCLC/data'
 # data_dir = base + '20220520/data'
 data_dir = base + '20220527/data'
-
+data_dir = base + '20220605/data'
+# data_dir = base + '20220607/data'
 data_files = \
     [
-     # 'ba133_1600V_ortecVT120.dat', \
-     # 'ba133_1600V_CLC144.dat', \
-     'cs137_600V.dat', \
-     # 'am241_600V.dat', \
-     # 'test.dat', \
-     # '../wave0.dat', \
+     # 'background_1600V.dat', \
+     'am241_800V_13300trig.dat', \
+     # 'baseline_test.dat', \
+     # '../wave1.dat', \
     ]
 
 
-n_to_plot = 15
+n_to_plot = 5
 
 rng = np.random.default_rng()
 
