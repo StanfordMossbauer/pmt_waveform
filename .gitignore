@@ -5,6 +5,7 @@
 *.log
 *~
 lib/pmt_waveform.egg-info
+lib/scratch.py
 
 processed.pkl
 !/.gitignore
