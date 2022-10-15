@@ -161,9 +161,8 @@ class WaveformContainer:
     waveforms for later integration or peak finding
     '''
 
-    def __init__(self, fname=None, record_length=None, header=True, \
-                 n_header_lines=7, header_binary_length=24, \
-                 chunk_size=1000):
+    def __init__(self, fname=None, chunk_size=1000, \
+                 filetype='wavedump', **kwargs):
         '''
         Initializes a class that can optionally be empty so we don't have to 
         immediately load things if we don't want to. Has the same arguments 
@@ -173,21 +172,26 @@ class WaveformContainer:
 
             fname - str, name of the datafile to load, likely a .dat file
 
-            record_length - int, if header==False, then the record length 
-                needs to be known a priori in order to parse anything at all
-
-            header - bool, specify if a header is present or not
-
-            n_header_lines - int, lines in the .txt file dedicated to a header 
-                and present for EACH event
-
-            header_binary_length - int, bytes in the binary .dat file dedicated 
-                to the header for EACH event
-
             chunk_size - int, number of waveforms to load into memory 
                 simultaneously when processing. This parameter has NOT
                 been optimized at all really
+
+            filetype - str, specifies which DAQ framework the file came
+                from since the headers and file/data structures are 
+                VERY different between the two
+
+            kwargs - various keyword args to pass to the "_preload"
+                functions. These have default values where needed and are
+                extrememly unlikely to change for things like the
+                wavedump files. Thus they're kind of "hidden", but not
+                really.
         '''
+
+        if filetype not in ['wavedump', 'compass']:
+            assert ValueError("binary file type must be either 'wavedump' "\
+                              +"or 'compass', indicating how it was acquired.")
+
+        self.filetype = filetype
 
         ### Populate the "fname" attribute. Most of the time, the data will
         ### remain on disk, aside from processing/plotting steps
@@ -196,24 +200,6 @@ class WaveformContainer:
         ### File/data handling attributes that are generally hidden from
         ### the user for default file handling. Unlikely that these change
         self.chunk_size = chunk_size
-        self.header = header
-
-        ### If there's a header, save the expected size/shape of the header
-        ### as class attributes. Again, unlikely that these change or need
-        ### to be adjusted from default values.
-        if self.header:
-            self.n_header_lines = n_header_lines
-            self.header_binary_length = header_binary_length
-            self._parse_header()
-        else:
-            self.n_header_lines = 0
-            self.header_binary_length = 0
-            self.record_length = record_length
-
-        ### If the file doesn't have a header, a "record_length" argument
-        ### has to be passed in order to parse events properly
-        if not self.header and self.record_length is None:
-            raise ValueError('If no header, need to provide "record_length"')
 
         ### We will count the number of waveforms
         self.n_waveform = None
@@ -223,116 +209,16 @@ class WaveformContainer:
         self.waveform_integrals = None
         self.baseline_arr = None
 
-        ### Compute the total number of waveforms based on the size of the
-        ### binary file. This definitely won't work for the ASCII encoded 
-        ### files to fuck me on that one. Maybe the count_lines() function
-        ### from above.
-        bytes_per_event = self.header_binary_length + 2*self.record_length
-        self.n_waveform = int( np.floor(os.path.getsize(self.fname) \
-                                          / bytes_per_event) )
+        if self.filetype == 'wavedump':
+            self._preload_wavedump_binary(**kwargs)
 
-        ### Instantiate these arrays as all zeros, so that when chunks
-        ### of data are loaded and these arrays are populated, it serves as
-        ### a kind of secondary record of what data has been loaded
-        self.indices = np.zeros(self.n_waveform)
-        self.times = np.zeros(self.n_waveform)
-
-        self.utimes = None
+        if self.filetype == 'compass':
+            self._preload_compass_binary(**kwargs)
 
 
 
 
-
-    def save(self, opt_ext=None, verbose=False):
-        '''
-        Method to save the class to a pre-defined location for later reloading
-        so all of the waveforms don't need to be reprocessed. This is useful
-        as the pulse maxima finding algorithm can take a while if the waveforms
-        are filtered prior to fitting.
-
-        INPUTS
-
-            opt_ext - str, optional extension to add to the default filename
-                if some special analysis was performed
-
-        '''
-
-        ### Make sure the extension has an underscore for intelligible names.
-        ### If it doesn't have an underscore, add one
-        if opt_ext is not None:
-            if opt_ext[0] != '_':
-                opt_ext = '_' + opt_ext
-        else:
-            opt_ext = ''
-
-        ### Extract the parent file name. Probably good to use the os.path
-        ### library instead of this derpy solution
-        parts = self.fname.split('.')
-        savename = parts[0] + opt_ext + '.wfm'
-
-        if verbose:
-            print('     ----------------------------------------')
-            print('Saving WaveformContainer object... ', end=' ')
-
-        pickle.dump(self, open(savename, 'wb'))
-
-        if verbose:
-            print('Done!')
-            print('Saved to: ', savename)
-            print('     ----------------------------------------')
-            sys.stdout.flush()
-
-        return None
-
-
-
-
-
-    def load(self, opt_ext=None, verbose=False):
-        '''
-        Method to save the class to a pre-defined location for later reloading
-        so all of the waveforms don't need to be reprocessed. This is useful
-        as the pulse maxima finding algorithm can take a while if the waveforms
-        are filtered prior to fitting.
-
-        INPUTS
-
-            opt_ext - str, optional extension to add to the default filename
-                if some special analysis was performed
-
-        '''
-
-
-
-        ### Make sure the extension has an underscore for intelligible names.
-        ### If it doesn't have an underscore, add one
-        if opt_ext is not None:
-            if opt_ext[0] != '_':
-                opt_ext = '_' + opt_ext
-        else:
-            opt_ext = ''
-
-        ### Extract the parent file name. Probably good to use the os.path
-        ### library instead of this derpy solution
-        parts = self.fname.split('.')
-        loadname = parts[0] + opt_ext + '.wfm'
-
-        old_class = pickle.load( open(loadname, 'rb') )
-        self.__dict__.update(old_class.__dict__)
-
-        if verbose:
-            print('     ----------------------------------------')
-            print('Loaded WaveformContainer from: ')
-            print('          ', loadname)
-            print('     ----------------------------------------')
-            sys.stdout.flush()
-
-        return None
-
-
-
-
-    def _parse_header(self):
+    def _parse_wavedump_header(self):
         '''
         Parse the first header for the record length, and maybe any other
         parameters if they end up being stored as class attributes
@@ -363,7 +249,70 @@ class WaveformContainer:
 
 
 
-    def _load_caen_binary(self, first_index=0, last_index=None, verbose=True):
+    def _preload_wavedump_binary(self, header=True, record_length=None, \
+                                 n_header_lines=7, header_binary_length=24):
+        '''
+        Function to "pre-load" a binary file from wavedump. This basically
+        parses the header and builds some class attributes that are useful
+        to have for some of the later functions
+
+        INPUTS
+
+            record_length - int, if header==False, then the record length 
+                needs to be known a priori in order to parse anything at all
+
+            header - bool, specify if a header is present or not
+
+            n_header_lines - int, lines in the .txt file dedicated to a header 
+                and present for EACH event
+
+            header_binary_length - int, bytes in the binary .dat file dedicated 
+                to the header for EACH event
+
+        OUTPUTS
+
+            NONE - just new class attributes
+        '''
+
+        self.header = header
+
+        ### If the file doesn't have a header, a "record_length" argument
+        ### has to be passed in order to parse events properly
+        if not self.header and self.record_length is None:
+            raise ValueError('If no header, need to provide "record_length"')
+
+        ### If there's a header, save the expected size/shape of the header
+        ### as class attributes. Again, unlikely that these change or need
+        ### to be adjusted from default values.
+        if self.header:
+            self.n_header_lines = n_header_lines
+            self.header_binary_length = header_binary_length
+            self._parse_wavedump_header()
+        else:
+            self.n_header_lines = 0
+            self.header_binary_length = 0
+            self.record_length = record_length
+
+        ### Compute the total number of waveforms based on the size of the
+        ### binary file. This definitely won't work for the ASCII encoded 
+        ### files so fuck me on that one. M
+        bytes_per_event = self.header_binary_length + 2*self.record_length
+        self.n_waveform = int( np.floor(os.path.getsize(self.fname) \
+                                          / bytes_per_event) )
+
+        ### Instantiate these arrays as all zeros, so that when chunks
+        ### of data are loaded and these arrays are populated, it serves as
+        ### a kind of secondary record of what data has been loaded
+        self.indices = np.zeros(self.n_waveform)
+        self.times = np.zeros(self.n_waveform)
+
+        self.utimes = None
+
+
+
+
+    def _load_wavedump_binary(self, first_index=0, last_index=None, \
+                              verbose=True):
         '''
         Function to load a .dat file from the CAEN, assumed to be in binary 
         format. Per the CAEN manual, data are encoded into 2 bytes, even for 
@@ -456,6 +405,95 @@ class WaveformContainer:
 
 
 
+
+
+    def _parse_compass_header(self):
+        '''
+        Parse the initial file header from the CoMPASS binary to see what 
+        kind of things are in the file. 
+        '''
+
+        with open(self.fname, 'rb') as file:
+            first_byte = file.read(1)
+
+        out = {}
+        out['energy'] = (first_byte & 0b00000001) > 0
+        out['keV/MeV'] = (first_byte & 0b00000010) > 0
+        out['energy_short'] = (first_byte & 0b00000100) > 0
+        out['waveforms'] = (first_byte & 0b00001000) > 0
+
+        return out
+
+
+
+
+    def _preload_compass_binary(self):
+        '''
+        Function to "pre-load" a binary file from wavedump. This basically
+        parses the header and builds some class attributes that are useful
+        to have for some of the later functions
+
+        INPUTS
+
+            record_length - int, if header==False, then the record length 
+                needs to be known a priori in order to parse anything at all
+
+            header - bool, specify if a header is present or not
+
+            n_header_lines - int, lines in the .txt file dedicated to a header 
+                and present for EACH event
+
+            header_binary_length - int, bytes in the binary .dat file dedicated 
+                to the header for EACH event
+
+        OUTPUTS
+
+            NONE - just new class attributes
+        '''
+
+        stuff_in_file = self._parse_compass_header()
+
+        header_binary_length = 16
+
+        if stuff_in_file['energy']:
+            header_binary_length += 2
+        
+        if stuff_in_file['keV/MeV']:
+            header_binary_length += 8
+        
+        if stuff_in_file['energy_short']:
+            header_binary_length += 2
+        
+        if stuff_in_file['waveforms']:
+            header_binary_length += 5
+
+
+        with open(self.fname, 'rb') as file:
+            ### Skip the overall file header (2 bytes) and the first event
+            ### header of the given length. Go back 4 bytes to get the 
+            ### number of waveforms
+            file.seek(2 + header_binary_length - 4)
+            self.record_length = int.from_bytes(file.read(4), byteorder='little', \
+                                                signed=False)
+
+
+        ### Compute the total number of waveforms based on the size of the
+        ### binary file. This definitely won't work for the ASCII encoded 
+        ### files so fuck me on that one. 
+        bytes_per_event = self.header_binary_length + 2*self.record_length
+        self.n_waveform = (np.floor(os.path.getsize(self.fname) - 2) \
+                                          / bytes_per_event) 
+
+        print(self.n_waveform)
+        input()
+
+        ### Instantiate these arrays as all zeros, so that when chunks
+        ### of data are loaded and these arrays are populated, it serves as
+        ### a kind of secondary record of what data has been loaded
+        self.indices = np.zeros(self.n_waveform)
+        self.times = np.zeros(self.n_waveform)
+
+        self.utimes = None
 
 
 
@@ -566,8 +604,8 @@ class WaveformContainer:
 
         ### Load the desired waveform with the binary loading function
         binary_index_arr, raw_waveform_arr = \
-            self._load_caen_binary(first_index=index, last_index=index+1, 
-                                   verbose=False)
+            self._load_wavedump_binary(first_index=index, last_index=index+1, 
+                                       verbose=False)
 
         ### Extract the desired event from the naive array that comes from
         ### the binary loading function
@@ -675,8 +713,8 @@ class WaveformContainer:
             ### Load the chunk
             chunk_index = chunk * self.chunk_size
             indices, waveforms = \
-                self._load_caen_binary(first_index=chunk_index, \
-                                       last_index=chunk_index+self.chunk_size)
+                self._load_wavedump_binary(first_index=chunk_index, \
+                                           last_index=chunk_index+self.chunk_size)
 
             ### Compute the baselines with a simple vector operation
             if not fit:
@@ -868,8 +906,8 @@ class WaveformContainer:
             ### Load only the waveforms in this particular chunk
             chunk_index = chunk * self.chunk_size
             indices, waveforms = \
-                self._load_caen_binary(first_index=chunk_index, \
-                                       last_index=chunk_index+self.chunk_size)
+                self._load_wavedump_binary(first_index=chunk_index, \
+                                           last_index=chunk_index+self.chunk_size)
 
             ### Define this quantity for easy array building. Nominally it should
             ### be the same as self.chunk_size, except for the last chunk.
@@ -1004,8 +1042,8 @@ class WaveformContainer:
             ### Load only the waveforms in this particular chunk
             chunk_index = chunk * self.chunk_size
             indices, waveforms = \
-                self._load_caen_binary(first_index=chunk_index, \
-                                       last_index=chunk_index+self.chunk_size)
+                self._load_wavedump_binary(first_index=chunk_index, \
+                                           last_index=chunk_index+self.chunk_size)
 
             ### Define this quantity for easy array building. Nominally it should
             ### be the same as self.chunk_size, except for the last chunk.
@@ -1202,6 +1240,97 @@ class WaveformContainer:
 
 
 
+
+
+
+    def save(self, opt_ext=None, verbose=False):
+        '''
+        Method to save the class to a pre-defined location for later reloading
+        so all of the waveforms don't need to be reprocessed. This is useful
+        as the pulse maxima finding algorithm can take a while if the waveforms
+        are filtered prior to fitting.
+
+        INPUTS
+
+            opt_ext - str, optional extension to add to the default filename
+                if some special analysis was performed
+
+        '''
+
+        ### Make sure the extension has an underscore for intelligible names.
+        ### If it doesn't have an underscore, add one
+        if opt_ext is not None:
+            if opt_ext[0] != '_':
+                opt_ext = '_' + opt_ext
+        else:
+            opt_ext = ''
+
+        ### Extract the parent file name. Probably good to use the os.path
+        ### library instead of this derpy solution
+        parts = self.fname.split('.')
+        savename = parts[0] + opt_ext + '.wfm'
+
+        if verbose:
+            print('     ----------------------------------------')
+            print('Saving WaveformContainer object... ', end=' ')
+
+        pickle.dump(self, open(savename, 'wb'))
+
+        if verbose:
+            print('Done!')
+            print('Saved to: ', savename)
+            print('     ----------------------------------------')
+            sys.stdout.flush()
+
+        return None
+
+
+
+
+
+
+
+
+    def load(self, opt_ext=None, verbose=False):
+        '''
+        Method to save the class to a pre-defined location for later reloading
+        so all of the waveforms don't need to be reprocessed. This is useful
+        as the pulse maxima finding algorithm can take a while if the waveforms
+        are filtered prior to fitting.
+
+        INPUTS
+
+            opt_ext - str, optional extension to add to the default filename
+                if some special analysis was performed
+
+        '''
+
+
+
+        ### Make sure the extension has an underscore for intelligible names.
+        ### If it doesn't have an underscore, add one
+        if opt_ext is not None:
+            if opt_ext[0] != '_':
+                opt_ext = '_' + opt_ext
+        else:
+            opt_ext = ''
+
+        ### Extract the parent file name. Probably good to use the os.path
+        ### library instead of this derpy solution
+        parts = self.fname.split('.')
+        loadname = parts[0] + opt_ext + '.wfm'
+
+        old_class = pickle.load( open(loadname, 'rb') )
+        self.__dict__.update(old_class.__dict__)
+
+        if verbose:
+            print('     ----------------------------------------')
+            print('Loaded WaveformContainer from: ')
+            print('          ', loadname)
+            print('     ----------------------------------------')
+            sys.stdout.flush()
+
+        return None
 
 
 
