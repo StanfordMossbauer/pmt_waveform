@@ -196,9 +196,6 @@ class WaveformContainer:
         ### Populate the "fname" attribute. Most of the time, the data will
         ### remain on disk, aside from processing/plotting steps
         self.fname = fname
-
-        ### File/data handling attributes that are generally hidden from
-        ### the user for default file handling. Unlikely that these change
         self.chunk_size = chunk_size
 
         ### We will count the number of waveforms
@@ -215,7 +212,7 @@ class WaveformContainer:
 
         if self.filetype == 'compass':
             self._preload_compass_binary(**kwargs)
-            self.waveform_loader = self._load_compass_binary
+            self.waveform_loader = self._load_compass_binary_waveforms
 
 
 
@@ -297,7 +294,7 @@ class WaveformContainer:
 
         ### Compute the total number of waveforms based on the size of the
         ### binary file. This definitely won't work for the ASCII encoded 
-        ### files so fuck me on that one. M
+        ### files so fuck me on that one. 
         bytes_per_event = self.header_binary_length + 2*self.record_length
         self.n_waveform = int( np.floor(os.path.getsize(self.fname) \
                                           / bytes_per_event) )
@@ -394,7 +391,7 @@ class WaveformContainer:
             self.indices[new_indices] = new_indices
 
             ### 'ADJUSTING' THE TIME STAMP BASED ON MANUAL
-            ### Shift left by one bit, the rignt by one bit since the digitizer
+            ### Shift left by one bit, then rignt by one bit since the digitizer
             ### has a 31-bit counter for time stamps, with an overflow bit that
             ### we will ignore (it's 0 for the first count, then continuously 1
             ### until the next acquisition session, i.e. useless). This left 
@@ -434,45 +431,28 @@ class WaveformContainer:
         Function to "pre-load" a binary file from wavedump. This basically
         parses the header and builds some class attributes that are useful
         to have for some of the later functions
-
-        INPUTS
-
-            record_length - int, if header==False, then the record length 
-                needs to be known a priori in order to parse anything at all
-
-            header - bool, specify if a header is present or not
-
-            n_header_lines - int, lines in the .txt file dedicated to a header 
-                and present for EACH event
-
-            header_binary_length - int, bytes in the binary .dat file dedicated 
-                to the header for EACH event
-
-        OUTPUTS
-
-            NONE - just new class attributes
         '''
 
-        stuff_in_file = self._parse_compass_header()
-
+        self.compass_binary_contents = self._parse_compass_header()
         self.header_binary_length = 16
 
-        if stuff_in_file['energy']:
+        if self.compass_binary_contents['energy']:
             self.header_binary_length += 2
         
-        if stuff_in_file['keV/MeV']:
+        if self.compass_binary_contents['keV/MeV']:
             self.header_binary_length += 8
         
-        if stuff_in_file['energy_short']:
+        if self.compass_binary_contents['energy_short']:
             self.header_binary_length += 2
         
-        if stuff_in_file['waveforms']:
+        if self.compass_binary_contents['waveforms']:
             self.header_binary_length += 5
 
         with open(self.fname, 'rb') as file:
             ### Skip the overall file header (2 bytes) and the first event
             ### header of the given length. Go back 4 bytes to get the 
-            ### number of waveforms
+            ### number of waveforms (hence the pedantic maths below).
+            ### The number of samples is stored as a 32-bit integer.
             file.seek(2 + self.header_binary_length - 4)
             self.record_length = int.from_bytes(file.read(4), byteorder='little', \
                                                 signed=False)
@@ -489,6 +469,7 @@ class WaveformContainer:
         ### a kind of secondary record of what data has been loaded
         self.indices = np.zeros(self.n_waveform)
         self.times = np.zeros(self.n_waveform)
+        self.waveform_types = np.zeros(self.n_waveform)
 
         self.utimes = None
 
@@ -496,8 +477,8 @@ class WaveformContainer:
 
 
 
-    def _load_compass_binary(self, first_index=0, last_index=None, \
-                              verbose=True):
+    def _load_compass_binary_waveforms(\
+            self, first_index=0, last_index=None, verbose=True):
         '''
         Function to load a .dat file from the CAEN, assumed to be in binary 
         format. Per the CAEN manual, data are encoded into 2 bytes, even for 
@@ -542,13 +523,8 @@ class WaveformContainer:
         bytes_per_event = self.header_binary_length + 2*self.record_length
         bytes_to_read = int(n_waveform * bytes_per_event)
 
-        # uint16_to_read = int(0.5 * n_waveform * bytes_per_event )
-        # assert not bytes_per_event % 2, \
-        #             "Reading an odd number of bytes. Dun fuq'd up"
-
-        ### Load the 14-bit data from the binary file, noting that CAEN packs
-        ### the final result into two bytes, such that we can pretend it's
-        ### just a bunch of unsigned 16-bit integers
+        ### Load the raw data with headers from the binary file as uint8s
+        ### so each element is a single byte
         raw_data = np.fromfile(self.fname, offset=first_index*bytes_per_event + 2, 
                                count=bytes_to_read, dtype='uint8')
 
@@ -563,24 +539,32 @@ class WaveformContainer:
         if len(raw_data) < bytes_to_read:
             n_waveform = int( len(raw_data) / int(bytes_per_event) )
 
+        ### For the wavedump binaries, the file actually tells you the 
+        ### indices of the recorded events, but it's always just counting
+        ### up the natural numbers. For the CoMPASS binaries, the
+        ### index is implicit from the location within the file
         new_indices = np.arange(n_waveform, dtype=int) + first_index
+        self.indices[new_indices] = new_indices
 
-        ### Reshape the output so the first axis indexes the waveforms, and
-        ### the second axis indexes time
+        ### Reshape the output so the first axis indexes the waveforms
         data_arr = raw_data.reshape(n_waveform, bytes_per_event)
+
+        ### Extract the waveform time-series from the raw bytearray, convert
+        ### it all to 16-bit unsigned integers and the reshape the flat
+        ### array into a 2D array with the first axis again indexing 
+        ### waveforms and the second indexing time
         waveform_data = \
-            np.frombuffer(data_arr[:,self.header_binary_length:].flatten().tobytes(), \
-                          dtype='uint16')
+            np.frombuffer(data_arr[:,self.header_binary_length:]\
+                                .flatten().tobytes(), dtype='int16')
         waveform_arr = waveform_data.reshape(n_waveform, self.record_length)
 
-        ### Parse the header and extract the event indices and event times,
-        ### to be incorporated into the indexing and time-keeping class
-        ### attributes defined to be nominally empty in the init() statement
-        # new_indices = np.frombuffer(waveform_arr[:,8:10].flatten().tobytes(), \
-        #                             dtype='uint32')
+        ### Parse the header and extract the event times, to be incorporated 
+        ### into the time-keeping class attributes defined to be nominally empty 
+        ### in the "_preload" functions
         new_times = np.frombuffer(data_arr[:,4:12].flatten().tobytes(), \
                                   dtype='uint64')
-        self.indices[new_indices] = new_indices
+        waveform_types = np.frombuffer(data_arr[:,20].tobytes(), dtype='uint8')
+        self.waveform_types[new_indices] = waveform_types      
 
         ### 'ADJUSTING' THE TIME STAMP BASED ON MANUAL
         ### Shift left by one bit, the rignt by one bit since the digitizer
@@ -592,6 +576,58 @@ class WaveformContainer:
         self.times[new_indices] = 1.0e-12 * new_times
 
         return new_indices, waveform_arr
+
+
+
+
+
+    def _load_compass_binary_energies(self, plot=False):
+        '''
+        Function to load a .dat file from the CAEN, assumed to be in binary 
+        format. Per the CAEN manual, data are encoded into 2 bytes, even for 
+        14-bit digitizers like the one we have. Thus, we can use NumPy's 
+        very basic fromfile() function to read the data into an array with 
+        dtype=uint16.
+
+        Only loads a small subset of all the waveforms for processing, so
+        that they're effectively processed in chunks
+
+        INPUTS
+
+            plot - boolean, flag for quick debug plotting
+
+        OUTPUTS
+
+        '''
+
+        ### Figure out the number of bytes to read (maybe store this number
+        ### as a class attribute?), but the 'record_length' is necessary by itself
+        ### in other functions, as is the header_binary_length
+        bytes_per_event = self.header_binary_length + 2*self.record_length
+
+        if self.waveform_integrals is None:
+            self.waveform_integrals = np.zeros(self.n_waveform)
+
+        with open(self.fname, 'rb') as file:
+
+            ### For each event, skip the overall file header (2 bytes),
+            ### advance to the event's position within the file, read the
+            ### 16-bit value encoding the energy (bytes n+12 and n+13), 
+            ### and keep looping
+            for i in range(self.n_waveform):
+                index = 2 + i*(bytes_per_event) + 12
+
+                file.seek(index, 0)
+                self.waveform_integrals[i] = \
+                    int.from_bytes(file.read(2), \
+                                   byteorder='little', \
+                                   signed=False)
+
+        if plot:
+            bins = np.arange(np.max(self.waveform_integrals)+1)
+            plt.hist(self.waveform_integrals, bins=bins)
+            plt.tight_layout()
+            plt.show()
 
 
 
@@ -718,18 +754,19 @@ class WaveformContainer:
         if (not baseline) and (self.baseline_arr is None):
             print('Compute the baseline before trying to plot without it...')
             baseline = True
+        waveform = raw_waveform.astype(np.float64).copy()
 
         ### Optionally subtract the baseline. Also, plot a horizontal line
         ### either at y=0 if the baseline is subtracted, or at the level of
         ### the baseline, for ease of viewing
-        waveform = raw_waveform.astype(np.float64).copy()
-        baseline_val = self.baseline_arr[index]
-        if baseline:
-            ax.axhline(baseline_val*amp_scale_fac, color='k', ls='--', \
-                       alpha=0.5, zorder=3)
-        else:
-            waveform -= baseline_val
-            ax.axhline(0.0, color='k', ls='--', alpha=0.5, zorder=3)
+        if self.baseline_arr is not None:
+            baseline_val = self.baseline_arr[index]
+            if baseline:
+                ax.axhline(baseline_val*amp_scale_fac, color='k', ls='--', \
+                           alpha=0.5, zorder=3)
+            else:
+                waveform -= baseline_val
+                ax.axhline(0.0, color='k', ls='--', alpha=0.5, zorder=3)
 
         ### Plot the waveform
         ax.plot(tvec*tscale_fac, waveform*amp_scale_fac, color=color)
